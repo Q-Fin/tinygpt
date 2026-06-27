@@ -1,0 +1,5 @@
+torch>=2.0.0
+
+# Optional (as per README): Intel Iris Xe / Intel GPU acceleration:
+# pip install intel-extension-for-pytorch
+# Without it the trainer falls back to CPU, which trains comfortably for a ~10 M parameter model on system RAM.
