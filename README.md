@@ -109,8 +109,8 @@ pip install torch>=2.0.0
 ```bash
 pip install intel-extension-for-pytorch
 ```
-Without IPEX the trainer automatically falls back to CPU, which trains this
-model comfortably using shared system RAM.
+Without IPEX the trainer automatically falls back to CPU, which trains this model comfortably using shared system RAM.
+Keep in mind that this Intel extension dependency is set as a comment in `requirements.txt` by default. If you choose to install dependencies directly via `pip install -r requirements.txt` and you would like to include it, you will have to manually remove the hashtag at line 4.
 
 ---
 
