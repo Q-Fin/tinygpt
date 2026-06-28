@@ -133,8 +133,8 @@ python scripts/generate.py --prompt "HAMLET:"
 
 ```
 tinygpt/
-├── tinygpt/               Python package (the model itself)
-│   ├── __init__.py        public API
+├── tinygpt/
+│   ├── __init__.py        Public API
 │   ├── config.py          ModelConfig, TrainConfig dataclasses
 │   ├── model.py           LayerNorm, CausalSelfAttention, FeedForward,
 │   │                      TransformerBlock, TinyGPT
@@ -143,18 +143,18 @@ tinygpt/
 │   └── trainer.py         Trainer (AdamW, cosine schedule, checkpointing)
 │
 ├── scripts/
-│   ├── prepare_data.py    download corpus + train tokenizer
-│   ├── train.py           training entry point
-│   └── generate.py        inference / text generation
+│   ├── prepare_data.py    Download corpus + train tokenizer
+│   ├── train.py           Training entry point
+│   └── generate.py        Inference / text generation
 │
 ├── data/
-│   └── corpus.txt         created by prepare_data.py
+│   └── corpus.txt         Created by prepare_data.py
 │
 ├── checkpoints/
-│   ├── tokenizer.json     saved tokenizer
-│   ├── ckpt_best.pt       checkpoint with lowest val loss
-│   ├── ckpt_latest.pt     most recent checkpoint
-│   └── log.jsonl          step-by-step training log (JSON-lines)
+│   ├── tokenizer.json     Saved tokenizer
+│   ├── ckpt_best.pt       Checkpoint with lowest val loss
+│   ├── ckpt_latest.pt     Most recent checkpoint
+│   └── log.jsonl          Step-by-step training log (JSON-lines)
 │
 ├── requirements.txt
 └── README.md
@@ -328,3 +328,18 @@ prompt = torch.tensor([tok.encode("HAMLET:")], dtype=torch.long)
 out    = model.generate(prompt, max_new_tokens=200, temperature=0.8, top_k=40)
 print(tok.decode(out[0].tolist()))
 ```
+
+---
+
+## License
+
+**MIT License** — This project is licensed under the MIT License.
+
+---
+
+<p align="center">
+  Developed by <a href="https://github.com/Q-Fin">Q-Fin</a><br><br>
+  <a href="https://github.com/Q-Fin">
+    <img src="https://avatars.githubusercontent.com/u/152863492" width="48" height="48" alt="FinEn" style="border-radius:50%">
+  </a>
+</p>
