@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint-dir", default="checkpoints")
     p.add_argument("--checkpoint",     default="best", choices=["best", "latest"],
                    help="Which checkpoint to load (default: best)")
+    p.add_argument("--tokenizer-path", default=None,
+                   help="Path to tokenizer.json. Default: look inside --checkpoint-dir, "
+                        "falling back to the path recorded in the checkpoint (if present).")
     p.add_argument("--prompt",         default="",
                    help="Seed text.  Empty string = unconditional generation.")
     p.add_argument("--max-tokens",     type=int,   default=300,
@@ -48,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--top-p",         type=float, default=None,
                    help="Nucleus sampling threshold (None = disabled)")
     p.add_argument("--device",        default="auto")
+    p.add_argument("--seed",          type=int,   default=None,
+                   help="RNG seed for sampling (default: unseeded / non-reproducible)")
 
     return p.parse_args()
 
@@ -56,35 +61,63 @@ def main() -> None:
     args   = parse_args()
     device = resolve_device(args.device)
 
-    ckpt_dir = Path(args.checkpoint_dir)
-    tok_path  = ckpt_dir / "tokenizer.json"
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+
+    ckpt_dir  = Path(args.checkpoint_dir)
     ckpt_path = ckpt_dir / f"ckpt_{args.checkpoint}.pt"
 
-    # ── Load tokenizer ────────────────────────────────────────────────────
-    if not tok_path.exists():
-        sys.exit(f"[Generate] tokenizer not found: {tok_path}\n"
-                 "  Run scripts/prepare_data.py first.")
-    tok = load_tokenizer(str(tok_path))
-
     # ── Load checkpoint ───────────────────────────────────────────────────
+    # (loaded before the tokenizer so a --tokenizer-path fallback recorded in
+    # the checkpoint's train_cfg — see Trainer._save() — can be used below)
     if not ckpt_path.exists():
         sys.exit(f"[Generate] checkpoint not found: {ckpt_path}\n"
-                 "  Run scripts/train.py first.")
+                 "  Run train.py first.")
+    # weights_only=False: this checkpoint mixes tensors with plain-Python
+    # config dicts. Only load checkpoints produced by this codebase.
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # ── Resolve & load tokenizer ──────────────────────────────────────────
+    # Priority: --tokenizer-path > path recorded in the checkpoint's
+    # train_cfg (new checkpoints only) > default checkpoint_dir/tokenizer.json
+    if args.tokenizer_path:
+        tok_path = Path(args.tokenizer_path)
+    elif ckpt.get("train_cfg", {}).get("tokenizer_path"):
+        tok_path = Path(ckpt["train_cfg"]["tokenizer_path"])
+    else:
+        tok_path = ckpt_dir / "tokenizer.json"
+
+    if not tok_path.exists():
+        sys.exit(f"[Generate] tokenizer not found: {tok_path}\n"
+                 "  Run prepare_data.py first, or pass --tokenizer-path.")
+    tok = load_tokenizer(str(tok_path))
 
     # ── Rebuild model from saved config ───────────────────────────────────
     # model_cfg is stored in the checkpoint by Trainer._save()
     mcfg         = ModelConfig(**ckpt["model_cfg"])
     mcfg.dropout = 0.0   # no dropout at inference
 
+    if tok.vocab_size != mcfg.vocab_size:
+        raise ValueError(
+            f"tokenizer vocab_size={tok.vocab_size} != model vocab_size={mcfg.vocab_size} "
+            f"({tok_path} does not match {ckpt_path}). "
+            "Pass the correct --tokenizer-path for this checkpoint."
+        )
+
     model = TinyGPT(mcfg).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
 
+    # val_loss is this checkpoint's own eval (added by the C3/M2 fix);
+    # fall back to best_val_loss for checkpoints saved before that change.
+    reported_val_loss = ckpt.get("val_loss")
+    if reported_val_loss is None:
+        reported_val_loss = ckpt["best_val_loss"]
+
     print(
         f"[Generate] loaded ckpt_{args.checkpoint}.pt"
         f"  step={ckpt['step']}"
-        f"  val_loss={ckpt['best_val_loss']:.4f}"
+        f"  val_loss={reported_val_loss:.4f}"
         f"  params={model.count_parameters():,}"
         f"  device={device}"
     )
