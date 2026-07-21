@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import time
 from pathlib import Path
 from typing import Optional
@@ -59,7 +60,9 @@ def resolve_device(spec: str) -> torch.device:
         import intel_extension_for_pytorch  # type: ignore  # noqa: F401
         if torch.xpu.is_available():        # type: ignore[attr-defined]
             return torch.device("xpu")
-    except ImportError:
+    except (ImportError, AttributeError):
+        # ImportError: ipex not installed. AttributeError: ipex installed but
+        # incompatible with this torch build (no torch.xpu attribute).
         pass
 
     # 2. NVIDIA CUDA
@@ -100,6 +103,15 @@ class Trainer:
         self.cfg    = cfg
         self.device = resolve_device(cfg.device)
         print(f"[Trainer] device = {self.device}")
+
+        # Seed RNGs before building the data loaders so shuffle order is
+        # reproducible across runs. NOTE: this only covers state Trainer
+        # itself creates. Model weight init happens in TinyGPT.__init__,
+        # which runs *before* the Trainer is constructed — callers that need
+        # reproducible weight init must seed (torch.manual_seed) before
+        # building the model. See scripts/train.py for the reference order.
+        torch.manual_seed(cfg.seed)
+        random.seed(cfg.seed)
 
         # Move model to device; optionally compile
         self.model = model.to(self.device)
@@ -182,7 +194,7 @@ class Trainer:
         def lr_fn(step: int) -> float:
             if step < wu:
                 return step / max(1, wu)
-            t = (step - wu) / max(1, total - wu)
+            t = min((step - wu) / max(1, total - wu), 1.0)  # clamp: cosine is periodic
             return max(floor, 0.5 * (1.0 + math.cos(math.pi * t)))
 
         return torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_fn)
@@ -202,22 +214,46 @@ class Trainer:
             total += loss.item()
             count += 1
         self.model.train()
-        return total / max(count, 1)
+
+        if count == 0:
+            # val_loader yielded 0 batches — e.g. the validation split has
+            # fewer than batch_size valid (x, y) windows. Returning 0.0 here
+            # would silently look like a perfect loss and get saved as
+            # ckpt_best.pt. Fail loudly instead; this is a config problem.
+            raise RuntimeError(
+                "Validation set produced 0 batches: need at least "
+                f"batch_size={self.cfg.batch_size} valid windows of length "
+                f"context_len+1. Reduce --batch-size, grow the corpus, or "
+                f"lower train_split."
+            )
+        return total / count
 
     # ── Checkpointing ──────────────────────────────────────────────────────
 
-    def _save(self, tag: str) -> None:
+    def _save(self, tag: str, val_loss: Optional[float] = None) -> None:
         ckpt_dir = Path(self.cfg.checkpoint_dir)
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         path = ckpt_dir / f"ckpt_{tag}.pt"
+
+        # If torch.compile() wrapped the model, self.model is an
+        # OptimizedModule and state_dict() keys get an "_orig_mod." prefix
+        # that a plain (uncompiled) TinyGPT can't load. Always save the
+        # underlying module so checkpoints are load-portable regardless of
+        # whether they were produced with compile_model=True.
+        raw_model = getattr(self.model, "_orig_mod", self.model)
+
         torch.save(
             {
                 "step":            self.step,
                 "epoch":           self.epoch,
-                "best_val_loss":   self.best_val_loss,
-                # model_cfg stored so generate.py can rebuild without the config file
-                "model_cfg":       vars(self.model.cfg),
-                "model_state":     self.model.state_dict(),
+                "val_loss":        val_loss,          # this checkpoint's own eval, if any
+                "best_val_loss":   self.best_val_loss, # best seen so far in this run
+                # model_cfg stored so generate.py can rebuild the model without config.py
+                "model_cfg":       vars(raw_model.cfg),
+                # train_cfg stored for provenance/debugging (lr, batch_size, tokenizer_path,
+                # etc. aren't otherwise recoverable from a checkpoint) — not auto-applied on load.
+                "train_cfg":       vars(self.cfg),
+                "model_state":     raw_model.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "scheduler_state": self.scheduler.state_dict(),
             },
@@ -228,13 +264,28 @@ class Trainer:
     def load(self, tag: str = "latest") -> None:
         """Resume training from a saved checkpoint."""
         path = Path(self.cfg.checkpoint_dir) / f"ckpt_{tag}.pt"
+        # weights_only=False is required: this checkpoint mixes tensors with
+        # plain-Python config dicts and optimizer/scheduler state, which
+        # torch's safe (weights_only=True) unpickler doesn't fully support.
+        # Only load checkpoints produced by this codebase — weights_only=False
+        # uses full pickle deserialization, which is unsafe for untrusted files.
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state"])
+
+        raw_model = getattr(self.model, "_orig_mod", self.model)
+        raw_model.load_state_dict(ckpt["model_state"])
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
         self.scheduler.load_state_dict(ckpt["scheduler_state"])
         self.step          = ckpt["step"]
         self.epoch         = ckpt["epoch"]
         self.best_val_loss = ckpt["best_val_loss"]
+
+        old_cfg = ckpt.get("train_cfg")  # absent in checkpoints saved before this fix
+        if old_cfg is not None and old_cfg != vars(self.cfg):
+            print(
+                "[Trainer] WARNING: resuming with a TrainConfig that differs from the "
+                "one this checkpoint was saved with. Saved config was:\n"
+                f"  {old_cfg}"
+            )
         print(f"[Trainer] resumed from step {self.step}  (best_val={self.best_val_loss:.4f})")
 
     # ── Main loop ──────────────────────────────────────────────────────────
@@ -345,9 +396,9 @@ class Trainer:
 
                 if is_best:
                     self.best_val_loss = val_loss
-                    self._save("best")
+                    self._save("best", val_loss=val_loss)
 
-                self._save("latest")
+                self._save("latest", val_loss=val_loss)
 
         total_elapsed = time.perf_counter() - t0
         print(
