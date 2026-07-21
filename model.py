@@ -83,9 +83,10 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, cfg: ModelConfig) -> None:
         super().__init__()
-        assert cfg.d_model % cfg.n_heads == 0, (
-            f"d_model ({cfg.d_model}) must be divisible by n_heads ({cfg.n_heads})"
-        )
+        if cfg.d_model % cfg.n_heads != 0:
+            raise ValueError(
+                f"d_model ({cfg.d_model}) must be divisible by n_heads ({cfg.n_heads})"
+            )
         self.d_model = cfg.d_model
         self.n_heads = cfg.n_heads
         self.d_k     = cfg.d_model // cfg.n_heads   # per-head dimension
@@ -220,7 +221,7 @@ class TinyGPT(nn.Module):
           FFN fc2     589 824
     Final LayerNorm                         768
     LM head  (weight-tied → 0 extra)          0
-    ─────────────────────────────────── ──────────
+    ─────────────────────────────────── ─────────
     TOTAL                            10 750 080
     ────────────────────────────────────────────
 
@@ -296,9 +297,10 @@ class TinyGPT(nn.Module):
         loss   : scalar cross-entropy, or None if targets is None
         """
         B, T = idx.shape
-        assert T <= self.cfg.context_len, (
-            f"Input length {T} exceeds context_len {self.cfg.context_len}"
-        )
+        if T > self.cfg.context_len:
+            raise ValueError(
+                f"Input length {T} exceeds context_len {self.cfg.context_len}"
+            )
 
         pos = torch.arange(T, device=idx.device)  # (T,)
         x   = self.emb_drop(self.token_emb(idx) + self.pos_emb(pos))
@@ -345,32 +347,36 @@ class TinyGPT(nn.Module):
         -------
         (1, T + max_new_tokens) token indices
         """
+        was_training = self.training  # restored in `finally`, even on exception
         self.eval()
 
-        for _ in range(max_new_tokens):
-            # Crop context to context_len
-            ctx     = idx[:, -self.cfg.context_len:]
-            logits, _ = self(ctx)
-            logits  = logits[:, -1, :] / temperature   # (1, V)
+        try:
+            for _ in range(max_new_tokens):
+                # Crop context to context_len
+                ctx     = idx[:, -self.cfg.context_len:]
+                logits, _ = self(ctx)
+                logits  = logits[:, -1, :] / temperature   # (1, V)
 
-            # ── Top-k filtering ──────────────────────────────────────────
-            if top_k is not None:
-                k = min(top_k, logits.size(-1))
-                threshold, _ = torch.topk(logits, k)
-                logits[logits < threshold[:, -1:]] = float("-inf")
+                # ── Top-k filtering ──────────────────────────────────────
+                if top_k is not None:
+                    k = min(top_k, logits.size(-1))
+                    threshold, _ = torch.topk(logits, k)
+                    logits[logits < threshold[:, -1:]] = float("-inf")
 
-            # ── Nucleus (top-p) filtering ────────────────────────────────
-            if top_p is not None:
-                sorted_logits, sorted_idx = torch.sort(logits, descending=True)
-                cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                # Shift right so the token that pushes over the threshold is kept
-                remove = (cum_probs - F.softmax(sorted_logits, dim=-1)) > top_p
-                sorted_logits[remove] = float("-inf")
-                logits = torch.zeros_like(logits).scatter_(-1, sorted_idx, sorted_logits)
+                # ── Nucleus (top-p) filtering ─────────────────────────────
+                if top_p is not None:
+                    sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+                    cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                    # Shift right so the token that crosses the threshold is kept
+                    remove = (cum_probs - F.softmax(sorted_logits, dim=-1)) > top_p
+                    sorted_logits[remove] = float("-inf")
+                    logits = torch.zeros_like(logits).scatter_(-1, sorted_idx, sorted_logits)
 
-            probs     = F.softmax(logits, dim=-1)
-            next_tok  = torch.multinomial(probs, num_samples=1)  # (1, 1)
-            idx       = torch.cat([idx, next_tok], dim=1)
+                probs     = F.softmax(logits, dim=-1)
+                next_tok  = torch.multinomial(probs, num_samples=1)  # (1, 1)
+                idx       = torch.cat([idx, next_tok], dim=1)
+        finally:
+            self.train(was_training)
 
         return idx
 
