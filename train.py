@@ -18,14 +18,17 @@ Key flags:
 Model size flags (defaults → ~10.75 M parameters with char tokenizer):
     --d-model 384   --n-heads 6   --n-layers 6   --context-len 256
 
-For a ~13.8 M parameter model with BPE (vocab=4096):
+For a ~12.3 M parameter model with BPE (vocab=4096):
     First run prepare_data.py --tokenizer bpe --vocab-size 4096 then  train.py  (d-model / n-layers flags unchanged)
 """
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
+
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -43,6 +46,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data-path",      default="data/corpus.txt")
     p.add_argument("--tokenizer-path", default="checkpoints/tokenizer.json")
     p.add_argument("--checkpoint-dir", default="checkpoints")
+    p.add_argument("--train-split",    type=float, default=0.9,
+                   help="Fraction of tokens used for training; remainder is validation")
+    p.add_argument("--seed",           type=int,   default=1337,
+                   help="RNG seed for weight init, dropout, and data shuffling")
 
     # ── Optimisation ──────────────────────────────────────────────────────
     p.add_argument("--steps",        type=int,   default=5000)
@@ -80,6 +87,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    # Seed before building anything RNG-dependent. Must happen before
+    # TinyGPT(mcfg) below, since weight init consumes the global RNG state
+    # at construction time — seeding later (e.g. inside Trainer.__init__)
+    # would be too late to make weight init reproducible.
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+
     # ── Tokenizer ─────────────────────────────────────────────────────────
     tok = load_tokenizer(args.tokenizer_path)
     print(f"[Main] tokenizer loaded  vocab_size={tok.vocab_size}")
@@ -99,6 +113,8 @@ def main() -> None:
         data_path       = args.data_path,
         tokenizer_path  = args.tokenizer_path,
         checkpoint_dir  = args.checkpoint_dir,
+        train_split     = args.train_split,
+        seed            = args.seed,
         batch_size      = args.batch_size,
         max_steps       = args.steps,
         grad_accum_steps= args.grad_accum,
@@ -114,7 +130,9 @@ def main() -> None:
     )
 
     # ── Data ──────────────────────────────────────────────────────────────
-    train_ds, val_ds = prepare_datasets(args.data_path, tok, mcfg.context_len)
+    train_ds, val_ds = prepare_datasets(
+        args.data_path, tok, mcfg.context_len, train_split=tcfg.train_split
+    )
 
     # ── Model ─────────────────────────────────────────────────────────────
     model = TinyGPT(mcfg)
