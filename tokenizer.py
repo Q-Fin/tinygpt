@@ -86,7 +86,8 @@ class CharTokenizer:
 
     def encode(self, text: str) -> List[int]:
         """Map each character to its integer ID.  Unknown chars → 0."""
-        assert self._trained, "Call train() or load() first."
+        if not self._trained:
+            raise RuntimeError("CharTokenizer is not trained. Call train() or load() first.")
         return [self._stoi.get(c, 0) for c in text]
 
     def decode(self, ids: List[int]) -> str:
@@ -105,7 +106,8 @@ class CharTokenizer:
     def load(cls, path: str) -> "CharTokenizer":
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        assert data.get("type") == "char", "Not a CharTokenizer file."
+        if data.get("type") != "char":
+            raise ValueError(f"Not a CharTokenizer file: {path!r} (type={data.get('type')!r})")
         tok = cls()
         tok._stoi = data["stoi"]
         tok._itos = {v: k for k, v in tok._stoi.items()}
@@ -161,7 +163,6 @@ class BPETokenizer:
 
     def __init__(self) -> None:
         self.vocab:  Dict[int, bytes]            = {}   # id  → bytes
-        self._inv:   Dict[bytes, int]            = {}   # bytes → id
         self.merges: Dict[Tuple[int, int], int]  = {}   # (a,b) → new_id
         self._trained: bool = False
 
@@ -177,12 +178,14 @@ class BPETokenizer:
         vocab_size : target vocabulary size (must be > 256)
         verbose    : print progress every 500 merges
         """
-        assert vocab_size > 256, "vocab_size must be > 256 (256 base bytes required)"
+        if vocab_size <= 256:
+            raise ValueError(
+                f"vocab_size must be > 256 (256 base bytes required), got {vocab_size}"
+            )
         n_merges = vocab_size - 256
 
         # ── Initialise base vocabulary ────────────────────────────────────
         self.vocab  = {i: bytes([i]) for i in range(256)}
-        self._inv   = {bytes([i]): i for i in range(256)}
         self.merges = {}
 
         # ── Encode corpus as byte IDs ─────────────────────────────────────
@@ -212,7 +215,6 @@ class BPETokenizer:
 
             # Register new token
             self.vocab[new_id] = merged_bytes
-            self._inv[merged_bytes] = new_id
             self.merges[best] = new_id
 
             # Replace all occurrences in corpus
@@ -240,7 +242,8 @@ class BPETokenizer:
         
         This is equivalent to the priority-based BPE decoding.
         """
-        assert self._trained, "Call train() or load() first."
+        if not self._trained:
+            raise RuntimeError("BPETokenizer is not trained. Call train() or load() first.")
         ids: List[int] = list(text.encode("utf-8"))
 
         while True:
@@ -285,10 +288,10 @@ class BPETokenizer:
     def load(cls, path: str) -> "BPETokenizer":
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        assert data.get("type") == "bpe", "Not a BPETokenizer file."
+        if data.get("type") != "bpe":
+            raise ValueError(f"Not a BPETokenizer file: {path!r} (type={data.get('type')!r})")
         tok = cls()
         tok.vocab   = {int(k): bytes(v) for k, v in data["vocab"].items()}
-        tok._inv    = {bytes(v): int(k) for k, v in data["vocab"].items()}
         tok.merges  = {(int(a), int(b)): int(c) for a, b, c in data["merges"]}
         tok._trained = True
         return tok
