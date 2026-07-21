@@ -102,7 +102,7 @@ This fits in shared system RAM on any modern machine.
 ## Setup
 
 ```bash
-pip install torch>=2.0.0
+pip install "torch>=2.0.0"
 ```
 
 **Intel Iris Xe / Intel GPU or whataver your hardware is (mine is the Intel Iris, but this is still optional, for XPU acceleration):**
