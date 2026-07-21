@@ -22,6 +22,20 @@ class ModelConfig:
     d_ff: int = 1536           # FFN inner dimension (GPT-2 uses 4 × d_model)
     dropout: float = 0.1       # Dropout probability (set 0.0 at inference)
 
+    def __post_init__(self) -> None:
+        if self.vocab_size <= 0:
+            raise ValueError(f"vocab_size must be positive, got {self.vocab_size}")
+        if self.context_len <= 0:
+            raise ValueError(f"context_len must be positive, got {self.context_len}")
+        if self.d_model <= 0 or self.n_heads <= 0 or self.n_layers <= 0 or self.d_ff <= 0:
+            raise ValueError("d_model, n_heads, n_layers, and d_ff must all be positive")
+        if self.d_model % self.n_heads != 0:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})"
+            )
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {self.dropout}")
+
 
 @dataclass
 class TrainConfig:
@@ -53,3 +67,25 @@ class TrainConfig:
     # ── Runtime ────────────────────────────────────────────────────────────
     device: str = "auto"            # "auto" | "cpu" | "cuda" | "xpu" | "mps"
     compile_model: bool = False     # torch.compile (PyTorch ≥ 2.0; skip on XPU)
+    seed: int = 1337                # RNG seed for data shuffling (Trainer) — see train.py
+                                     # for seeding model init before construction.
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.train_split < 1.0:
+            raise ValueError(f"train_split must be in (0, 1), got {self.train_split}")
+        if self.batch_size <= 0 or self.grad_accum_steps <= 0:
+            raise ValueError("batch_size and grad_accum_steps must be positive")
+        if self.max_steps <= 0:
+            raise ValueError(f"max_steps must be positive, got {self.max_steps}")
+        if self.warmup_steps < 0 or self.warmup_steps >= self.max_steps:
+            raise ValueError(
+                f"warmup_steps ({self.warmup_steps}) must be in [0, max_steps={self.max_steps})"
+            )
+        if self.eval_interval <= 0 or self.log_interval <= 0:
+            raise ValueError("eval_interval and log_interval must be positive (used as a modulus)")
+        if self.n_eval_batches <= 0:
+            raise ValueError(f"n_eval_batches must be positive, got {self.n_eval_batches}")
+        if self.lr <= 0:
+            raise ValueError(f"lr must be positive, got {self.lr}")
+        if not 0.0 <= self.min_lr_ratio <= 1.0:
+            raise ValueError(f"min_lr_ratio must be in [0, 1], got {self.min_lr_ratio}")
