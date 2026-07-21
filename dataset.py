@@ -26,7 +26,7 @@ class TokenDataset(Dataset):
     """
     Fixed-length sliding-window next-token-prediction dataset.
 
-    Given a flat token sequence of length N, the dataset contains N − context_len − 1 samples.  Each sample is a pair:
+    Given a flat token sequence of length N, the dataset contains N − context_len samples.  Each sample is a pair:
 
         x = tokens[i   : i + context_len]        input
         y = tokens[i+1 : i + context_len + 1]    targets (x shifted right by 1)
@@ -44,8 +44,9 @@ class TokenDataset(Dataset):
         self.context_len = context_len
 
     def __len__(self) -> int:
-        # Last valid start index: len(data) - context_len - 1
-        return max(0, len(self.data) - self.context_len - 1)
+        # Valid start indices are 0 .. len(data) - context_len - 1 inclusive
+        # (idx + context_len + 1 <= len(data)), i.e. len(data) - context_len windows.
+        return max(0, len(self.data) - self.context_len)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         chunk = self.data[idx : idx + self.context_len + 1]
